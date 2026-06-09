@@ -1,0 +1,141 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: vihara-postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-vihara}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secure_password_123}
+      POSTGRES_DB: ${DB_NAME:-vihara_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-vihara}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - vihara-network
+    restart: unless-stopped
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: vihara-redis
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_secure_123}
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - vihara-network
+    restart: unless-stopped
+
+  # Qdrant Vector Database (Optional)
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: vihara-qdrant
+    volumes:
+      - qdrant_data:/qdrant/storage
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+    environment:
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-qdrant_secure_key_123}
+    networks:
+      - vihara-network
+    restart: unless-stopped
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: vihara-backend
+    environment:
+      # Database
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-vihara}:${DB_PASSWORD:-secure_password_123}@postgres:5432/${DB_NAME:-vihara_db}
+      
+      # Redis
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_secure_123}@redis:6379/0
+      
+      # Qdrant Vector DB
+      QDRANT_URL: http://qdrant:6333
+      
+      # API Keys (from .env file)
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      HUGGINGFACE_API_TOKEN: ${HUGGINGFACE_API_TOKEN}
+      
+      # Cloudinary (if using)
+      CLOUDINARY_CLOUD_NAME: ${CLOUDINARY_CLOUD_NAME}
+      CLOUDINARY_API_KEY: ${CLOUDINARY_API_KEY}
+      CLOUDINARY_API_SECRET: ${CLOUDINARY_API_SECRET}
+      
+      # JWT Secret
+      SECRET_KEY: ${SECRET_KEY:-your_secret_key_change_in_production}
+      
+      # Environment
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      DEBUG: ${DEBUG:-False}
+    
+    ports:
+      - "${API_PORT:-8000}:8000"
+    
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    
+    volumes:
+      - ./backend:/app
+    
+    networks:
+      - vihara-network
+    
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/docs')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # React Frontend (Nginx)
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: vihara-frontend
+
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+
+    depends_on:
+      - backend
+
+    networks:
+      - vihara-network
+
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  qdrant_data:
+    driver: local
+
+networks:
+  vihara-network:
+    driver: bridge
